@@ -5,7 +5,7 @@ import { CreateAuthDto } from './dto/create-auth.dto';
 import { Auth, AuthDocument } from './schema/auth.schema';
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
-import {CONSTANTS}  from '../../utils/constants';
+import { CONSTANTS } from '../../utils/constants';
 import { RedisService } from '../../redis/redis.service';
 
 @Injectable()
@@ -38,8 +38,8 @@ export class AuthService {
       const newUser = new this.authModel({
         ...createAuthDto,
         password: hashedPassword,
-        role:CONSTANTS.ROLES[2]
-         // Replace the plain text password with the hashed one
+        role: CONSTANTS.ROLES[2]
+        // Replace the plain text password with the hashed one
       });
 
       await newUser.save();
@@ -54,7 +54,6 @@ export class AuthService {
 
   async login(data: any): Promise<object> {
     try {
-      // console.log('data:====service ', data);
       const { email } = data;
       const user: any = await this.authModel.find({ email }).exec();
       console.log('user: ', user);
@@ -64,13 +63,11 @@ export class AuthService {
         throw new UnauthorizedException("Invalid Email");
       }
 
-
       const isPasswordValid = await bcrypt.compare(data.password, user[0].password);
       // console.log('isPasswordValid: ', isPasswordValid);
       if (!isPasswordValid) {
         throw new UnauthorizedException("Invalid Password");
       }
-
 
       const userObject = {
         userId: user[0]._id,
@@ -80,26 +77,62 @@ export class AuthService {
         number: user[0].number
       };
 
-      const accessToken = this.jwtService.sign(userObject);
-      console.log('accessToken: ', accessToken);
-      if(accessToken){
-        
-        const dataToken:any=  await this.redisService.setToken(userObject.userId, accessToken);
-        console.log('dataToken: ', dataToken);
-        
-      
-          // await this.redisService.getClient().set(userObject.userId.toString(), accessToken);
+      let accessToken: any;
+      let RefreshToken: any;
+      const IsTokenExists: any = await this.redisService.searchKey(userObject.userId)
+
+      if (IsTokenExists == 1) {
+        const getToken: any = await this.redisService.getToken(userObject.userId);
+        let isVarified: any = await this.verifyRefreshToken(userObject.userId, getToken)
+
+        if (isVarified == true) {
+          RefreshToken = getToken;
+          accessToken = await this.jwtService.sign(userObject);
+        } else {
+          const deleteToken: any = await this.redisService.deleteToken(userObject.userId)
+          if (deleteToken == 1) {
+            RefreshToken = await this.jwtService.sign(userObject, { expiresIn: '2m' })
+            if (RefreshToken) {
+              await this.redisService.setToken(userObject.userId, RefreshToken);
+            }
+            accessToken = await this.jwtService.sign(userObject);
+          }
         }
-        
-          const getToken:any=await this.redisService.getToken(userObject.userId);
-          console.log('getToken: ', getToken);
-        
+      } else {
+        RefreshToken = await this.jwtService.sign(userObject, { expiresIn: '2m' })
+        if (RefreshToken) {
+          console.log('RefreshToken:NEW GENEERATED IN ELSE OF IS EXISTS ');
+          await this.redisService.setToken(userObject.userId, RefreshToken);
+        }
+        accessToken = await this.jwtService.sign(userObject);
+      }
 
-      console.log('userObject: ', userObject);
-
-      return { message: "Login Successfully", userObject, Token: accessToken };
+      return { message: "Login Successfully", userObject, Token: accessToken, refreshToken: RefreshToken };
     } catch (error) {
       throw error;
     }
   }
+
+
+  async verifyRefreshToken(userId: string, refreshToken: string): Promise<boolean> {
+    console.log('userId: ', userId);
+    const stringPart = userId.toString();
+    console.log('stringPart: ', stringPart);
+    try {
+      const decodedToken = this.jwtService.verify(refreshToken);
+
+      // If verification fails or the token doesn't contain expected user data, return false
+      if (!decodedToken || !decodedToken.userId || decodedToken.userId !== stringPart) {
+        return false;
+      }
+      // If all checks pass, return true indicating a valid refresh token
+      return true;
+    } catch (error) {
+      // Handle errors or invalid tokens here
+      console.error('Error verifying refresh token:', error);
+      return false;
+    }
+  }
+
+
 }
